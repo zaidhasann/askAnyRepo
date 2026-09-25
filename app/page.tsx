@@ -1,69 +1,43 @@
-import Image from "next/image";
+"use client";
+
+import { FormEvent, useState } from "react";
+
+type Snapshot = { url: string; commit: string; files: { path: string; bytes: number }[]; ignored: number; truncated: boolean };
 
 export default function Home() {
+  const [url, setUrl] = useState("");
+  const [fileCap, setFileCap] = useState("500");
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [error, setError] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+
+  async function inspect(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setIsLoading(true); setError(""); setSnapshot(null);
+    try {
+      const response = await fetch("/api/inspect", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url, fileCap: Number(fileCap) }) });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? "Inspection failed.");
+      setSnapshot(payload);
+    } catch (inspectionError) { setError(inspectionError instanceof Error ? inspectionError.message : "Inspection failed."); }
+    finally { setIsLoading(false); }
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+    <main className="shell">
+      <div className="topline"><span className="mark">AR</span><span>ASK ANY REPO</span><span className="status"><i /> local workspace</span></div>
+      <section className="hero"><p className="eyebrow">Repository intelligence / 01</p><h1>Bring a codebase<br /><em>into focus.</em></h1><p className="lede">Start with a clean, shallow snapshot. We&apos;ll map the repository before the questions begin.</p></section>
+      <section className="workspace-grid">
+        <form className="inspect-panel" onSubmit={inspect}>
+          <div className="panel-heading"><span>01</span><h2>Source repository</h2></div>
+          <label htmlFor="repo-url">GitHub URL</label><div className="url-field"><span>https://</span><input id="repo-url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="github.com/owner/repository" required /></div>
+          <div className="field-row"><div><label htmlFor="file-cap">File cap</label><input id="file-cap" type="number" min="1" max="10000" value={fileCap} onChange={(event) => setFileCap(event.target.value)} /></div><p className="field-note">A shallow clone, walked locally.<br />Images, locks, builds, and dependencies are skipped.</p></div>
+          <button type="submit" disabled={isLoading}>{isLoading ? "Mapping repository..." : "Map repository"}<span>↗</span></button>
+          {error && <p className="error" role="alert">{error}</p>}
+        </form>
+        <aside className="protocol-panel"><div className="panel-heading"><span>02</span><h2>Protocol</h2></div><ol><li><strong>Clone</strong><span>Depth one, no tags</span></li><li><strong>Filter</strong><span>Focused file surface</span></li><li><strong>Count</strong><span>Hard cap enforced</span></li></ol><div className="vector-note"><span className="vector-icon">∿</span><div><strong>pgvector ready</strong><span>Semantic retrieval is configured in Supabase.</span></div></div></aside>
+      </section>
+      {snapshot && <section className="results" aria-live="polite"><div className="results-heading"><div><p className="eyebrow">Snapshot complete</p><h2>Repository surface</h2></div><span className="commit">{snapshot.commit.slice(0, 8)}</span></div><div className="stats"><div><strong>{snapshot.files.length}</strong><span>files mapped</span></div><div><strong>{snapshot.ignored}</strong><span>entries filtered</span></div><div><strong>{snapshot.truncated ? "CAP" : "FULL"}</strong><span>{snapshot.truncated ? "limit reached" : "tree visited"}</span></div></div><ul className="file-list">{snapshot.files.map((file) => <li key={file.path}><span>{file.path}</span><small>{file.bytes.toLocaleString()} B</small></li>)}</ul></section>}
+      <footer><span>temporary clone / discarded after inspection</span><span>supabase + pgvector / eval harness</span></footer>
+    </main>
   );
 }

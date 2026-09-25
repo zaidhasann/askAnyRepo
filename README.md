@@ -1,4 +1,14 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+## Ask Any Repo
+
+This is a Next.js + TypeScript repository mapping tool. Enter a public GitHub URL to perform a depth-one clone, filter the file tree, and enforce a file-count cap.
+
+### Supabase
+
+Create a Supabase project, copy `.env.example` to `.env.local`, and run the SQL in `supabase/migrations/20260925000000_enable_pgvector.sql` in the Supabase SQL editor. It enables the `vector` extension and creates the `repository_chunks` table for future semantic indexing.
+
+### Evaluation harness
+
+The independent Python harness lives in `eval/`. Run `python eval/harness.py <github-url> --file-cap 100` to produce the same bounded repository snapshot without the web app.
 
 ## Getting Started
 
