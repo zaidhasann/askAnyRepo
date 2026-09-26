@@ -2,7 +2,7 @@ import Groq from "groq-sdk";
 import type { RepositorySnapshot } from "@/lib/repository";
 
 const MODEL = "openai/gpt-oss-120b";
-const STEP_CAP = 12;
+const STEP_CAP = 24;
 const TIMEOUT_MS = 90_000;
 
 export type TraceRecord = {
@@ -31,20 +31,35 @@ class Budget {
   }
 }
 
-function getClient() {
-  if (!process.env.GROQ_API_KEY) throw new Error("GROQ_API_KEY is required to ask questions.");
-  return new Groq({ apiKey: process.env.GROQ_API_KEY });
+function getClients() {
+  const keys = [process.env.GROQ_API_KEY, process.env.GROQ_API_KEY_FALLBACK].filter((key): key is string => Boolean(key));
+  if (!keys.length) throw new Error("GROQ_API_KEY or GROQ_API_KEY_FALLBACK is required to ask questions.");
+  return [...new Set(keys)].map((apiKey) => new Groq({ apiKey }));
+}
+
+function isRateLimited(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const status = "status" in error ? error.status : undefined;
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  return status === 429 || message.includes("rate limit") || message.includes("rate_limit") || message.includes("exhausted");
 }
 
 async function askModel(prompt: string, budget: Budget) {
-  budget.consume();
-  const client = getClient();
-  const remaining = Math.max(1, budget.deadline - Date.now());
-  const response = await Promise.race([
-    client.chat.completions.create({ model: MODEL, temperature: 0.2, messages: [{ role: "user", content: prompt }] }),
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("budget_exceeded")), remaining)),
-  ]);
-  return response.choices[0]?.message?.content?.trim() ?? "";
+  const clients = getClients();
+  for (let index = 0; index < clients.length; index += 1) {
+    budget.consume();
+    const remaining = Math.max(1, budget.deadline - Date.now());
+    try {
+      const response = await Promise.race([
+        clients[index].chat.completions.create({ model: MODEL, temperature: 0.2, messages: [{ role: "user", content: prompt }] }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("budget_exceeded")), remaining)),
+      ]);
+      return response.choices[0]?.message?.content?.trim() ?? "";
+    } catch (error) {
+      if (!isRateLimited(error) || index === clients.length - 1) throw error;
+    }
+  }
+  throw new Error("No Groq client available.");
 }
 
 function parseJson<T>(text: string, fallback: T): T {
@@ -58,12 +73,15 @@ function candidates(snapshot: RepositorySnapshot, question: string, budget: Budg
   const terms = question.toLowerCase().split(/[^a-z0-9]+/).filter((term) => term.length > 2);
   const ranked = snapshot.files.map((file) => ({
     file,
-    score: terms.reduce((score, term) => score + (file.path.toLowerCase().includes(term) ? 2 : 0), 0),
+    score: terms.reduce((score, term) => {
+      const pathMatch = file.path.toLowerCase().includes(term);
+      const contentMatch = (file.content ?? "").toLowerCase().includes(term);
+      return score + (pathMatch ? 3 : 0) + (contentMatch ? 1 : 0);
+    }, 0),
   })).sort((a, b) => b.score - a.score);
-  const selected = ranked.slice(0, 1).map(({ file }) => file);
-  for (const file of selected) {
+  const selected = ranked.filter(({ score }) => score > 0).slice(0, 1).map(({ file }) => file);
+  for (let index = 0; index < selected.length; index += 1) {
     budget.consume();
-    if (!file.content) file.content = "";
   }
   return selected;
 }
@@ -88,14 +106,16 @@ async function planner(question: string, mode: "question" | "error", budget: Bud
   const output = await askModel(prompt, budget);
   traceLog.push(trace("Planner", question, output, ["groq.chat.completions.create"], started));
   const parsed = parseJson<{ questions?: string[] }>(output, { questions: [] });
-  return (parsed.questions ?? []).filter(Boolean).slice(0, 3);
+  return (parsed.questions ?? []).filter(Boolean).slice(0, 3).length
+    ? (parsed.questions ?? []).filter(Boolean).slice(0, 3)
+    : [question];
 }
 
 async function executor(question: string, snapshot: RepositorySnapshot, budget: Budget, traceLog: TraceRecord[]): Promise<PartialAnswer> {
   const started = Date.now();
   const files = candidates(snapshot, question, budget);
   const context = files.map((file) => `FILE: ${file.path}\n${file.content ?? ""}`).join("\n\n");
-  const prompt = `You are Executor. Answer the sub-question using only the files below. Return ONLY JSON: {"answer":"...","reason":"one sentence explaining why this file/line is likely responsible","citation":{"path":"exact/path","line":number},"diff":"optional unified diff or empty string"}. The citation must be an exact path and line from the supplied files. Sub-question: ${question}\n\n${context}`;
+  const prompt = `You are Executor. Answer the sub-question using only the files below. Return ONLY JSON: {"answer":"...","reason":"one sentence explaining why this file/line is likely responsible","citation":{"path":"exact/path","line":number},"diff":"optional unified diff or empty string"}. The citation must be an exact path and line from the supplied files. If the files do not contain evidence, return an answer saying it could not be verified and set citation to null; never invent a file or line. Sub-question: ${question}\n\n${context}`;
   const output = await askModel(prompt, budget);
   traceLog.push(trace("Executor", question, output, ["snapshot.file_content", "groq.chat.completions.create"], started));
   const parsed = parseJson<{ answer?: string; reason?: string; citation?: Citation; diff?: string }>(output, {});
@@ -108,7 +128,7 @@ async function runPipeline(question: string, mode: "question" | "error", snapsho
   for (const subQuestion of subQuestions) {
     let result: PartialAnswer;
     try { result = await executor(subQuestion, snapshot, budget, traceLog); } catch (error) {
-      if (error instanceof Error && error.message === "budget_exceeded") throw error;
+      if (error instanceof Error && error.message === "budget_exceeded") return results;
       result = { question: subQuestion, answer: "The Executor could not complete this part.", confidence: "low" };
     }
     const criticStarted = Date.now();
@@ -116,7 +136,7 @@ async function runPipeline(question: string, mode: "question" | "error", snapsho
     traceLog.push(trace("Critic", subQuestion, JSON.stringify({ valid, retry: !valid }), ["citation.line_count"], criticStarted));
     if (!valid) {
       try { result = await executor(subQuestion, snapshot, budget, traceLog); } catch (error) {
-        if (error instanceof Error && error.message === "budget_exceeded") throw error;
+        if (error instanceof Error && error.message === "budget_exceeded") return results;
       }
       const retryStarted = Date.now();
       valid = inspectCitation(result, snapshot);

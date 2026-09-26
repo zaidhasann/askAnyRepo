@@ -27,6 +27,7 @@ Create `.env.local` in the project root:
 
 ```env
 GROQ_API_KEY=your-groq-api-key
+GROQ_API_KEY_FALLBACK=optional-fallback-groq-api-key
 ```
 
 Never commit `.env.local`. It is ignored by Git.

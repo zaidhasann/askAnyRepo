@@ -11,7 +11,8 @@ export async function POST(request: Request) {
     return NextResponse.json(await askAgents(body.question.trim(), body.snapshot, body.mode === "error" ? "error" : "question"));
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : "Ask failed.";
-    const message = rawMessage.includes("429") || rawMessage.toLowerCase().includes("rate limit")
+    const statusCode = error && typeof error === "object" && "status" in error ? error.status : undefined;
+    const message = statusCode === 429 || rawMessage.includes("429") || rawMessage.toLowerCase().includes("rate limit") || rawMessage.toLowerCase().includes("exhausted")
       ? "Groq rate limit reached (30 requests/minute on the free tier). Wait before asking again."
       : rawMessage;
     const status = message.includes("GROQ_API_KEY") ? 500 : 400;
