@@ -29,6 +29,7 @@ const IGNORED_EXTENSIONS = new Set([
 export type RepositoryFile = {
   path: string;
   bytes: number;
+  content?: string;
 };
 
 export type RepositorySnapshot = {
@@ -38,6 +39,8 @@ export type RepositorySnapshot = {
   files: RepositoryFile[];
   ignored: number;
   truncated: boolean;
+  degraded?: boolean;
+  degradedReason?: string;
 };
 
 function validateGitHubUrl(value: string) {
@@ -70,10 +73,24 @@ function shouldIgnore(relativePath: string) {
   );
 }
 
+async function removeTemporaryDirectory(directory: string) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await fs.rm(directory, { recursive: true, force: true, maxRetries: 1, retryDelay: 100 });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EBUSY" && code !== "EPERM" && code !== "ENOTEMPTY") throw error;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+}
+
 async function walkFiles(root: string, fileCap: number) {
   const files: RepositoryFile[] = [];
   let ignored = 0;
   let truncated = false;
+  let degraded = false;
 
   async function visit(directory: string) {
     const entries = await fs.readdir(directory, { withFileTypes: true });
@@ -100,12 +117,18 @@ async function walkFiles(root: string, fileCap: number) {
       }
 
       const stats = await fs.stat(absolutePath);
-      files.push({ path: relativePath.split(path.sep).join("/"), bytes: stats.size });
+      const file: RepositoryFile = { path: relativePath.split(path.sep).join("/"), bytes: stats.size };
+      try {
+        file.content = await fs.readFile(absolutePath, "utf8");
+      } catch {
+        degraded = true;
+      }
+      files.push(file);
     }
   }
 
   await visit(root);
-  return { files, ignored, truncated };
+  return { files, ignored, truncated, degraded };
 }
 
 export async function cloneAndInspectRepository(
@@ -118,23 +141,56 @@ export async function cloneAndInspectRepository(
 
   const url = validateGitHubUrl(inputUrl);
   const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "askanyrepo-"));
+  let clonePath = path.join(temporaryRoot, "repository");
+  let degraded = false;
 
   try {
-    const clonePath = path.join(temporaryRoot, "repository");
-    await execFileAsync("git", ["clone", "--depth", "1", "--no-tags", url, clonePath], {
-      timeout: 120_000,
-      maxBuffer: 4 * 1024 * 1024,
-    });
-    const { stdout: commit } = await execFileAsync("git", ["-C", clonePath, "rev-parse", "HEAD"]);
+    let cloneError: unknown;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      clonePath = path.join(temporaryRoot, attempt === 0 ? "repository" : `repository-retry-${attempt}`);
+      try {
+        await execFileAsync("git", ["clone", "--depth", "1", "--no-tags", url, clonePath], {
+          timeout: 120_000,
+          maxBuffer: 4 * 1024 * 1024,
+        });
+        cloneError = undefined;
+        break;
+      } catch (error) {
+        cloneError = error;
+        if (attempt === 0) {
+          await removeTemporaryDirectory(clonePath);
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+      }
+    }
+
+    if (cloneError) {
+      const error = cloneError as NodeJS.ErrnoException & { stderr?: string };
+      const degradedReason = error.stderr?.trim() || error.message || "Git clone failed after one retry.";
+      return { url, commit: "unknown", root: clonePath, files: [], ignored: 0, truncated: false, degraded: true, degradedReason };
+    }
+
+    let commit = "unknown";
+    try {
+      const result = await execFileAsync("git", ["-C", clonePath, "rev-parse", "HEAD"]);
+      commit = result.stdout.trim();
+    } catch {
+      degraded = true;
+    }
+
     const tree = await walkFiles(clonePath, fileCap);
 
     return {
       url,
-      commit: commit.trim(),
+      commit,
       root: clonePath,
       ...tree,
+      degraded: degraded || tree.degraded,
     };
   } finally {
-    await fs.rm(temporaryRoot, { recursive: true, force: true });
+    try {
+      await removeTemporaryDirectory(temporaryRoot);
+    } catch {
+    }
   }
 }

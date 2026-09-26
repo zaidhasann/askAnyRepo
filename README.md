@@ -1,46 +1,73 @@
-## Ask Any Repo
+# Ask Any Repo
 
-This is a Next.js + TypeScript repository mapping tool. Enter a public GitHub URL to perform a depth-one clone, filter the file tree, and enforce a file-count cap.
+Ask plain-English questions about a public GitHub repository and get a cited answer from a small multi-agent pipeline.
 
-### Supabase
+## What It Does
 
-Create a Supabase project, copy `.env.example` to `.env.local`, and run the SQL in `supabase/migrations/20260925000000_enable_pgvector.sql` in the Supabase SQL editor. It enables the `vector` extension and creates the `repository_chunks` table for future semantic indexing.
+1. Shallow-clones a public GitHub repository with `git clone --depth 1`.
+2. Filters dependencies, build output, lockfiles, and image assets.
+3. Reads the retained file contents with a hard file-count cap.
+4. Runs three cooperating agents:
+   - **Planner** creates up to three focused sub-questions.
+   - **Executor** finds likely files and drafts cited answers or a suggested diff.
+   - **Critic** deterministically verifies citation paths and line numbers.
+5. Displays the answer, locations, confidence, trace, consistency score, and optional approval gate.
 
-### Evaluation harness
+The UI supports both **Ask a question** and **Paste an error** modes. Error mode uses a different Planner instruction to identify likely files and functions, then uses the same Executor and Critic pipeline.
 
-The independent Python harness lives in `eval/`. Run `python eval/harness.py <github-url> --file-cap 100` to produce the same bounded repository snapshot without the web app.
+## Setup
 
-## Getting Started
+Requirements: Node.js, npm, Git, and a Groq API key.
 
-First, run the development server:
+```bash
+npm install
+```
+
+Create `.env.local` in the project root:
+
+```env
+GROQ_API_KEY=your-groq-api-key
+```
+
+Never commit `.env.local`. It is ignored by Git.
+
+Start the app:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Usage
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. Paste a public repository URL such as `https://github.com/octocat/Hello-World`.
+2. Set a file cap if needed and select **Map repository**.
+3. Ask a question or paste an error/stack trace.
+4. Select Planner, Executor, or Critic to inspect its audit trace.
+5. For an error-mode suggested diff, use **Approve** or **Reject**. Approval is intentionally a stub and does not write to GitHub.
 
-## Learn More
+The system retries failed clones once, reports degraded snapshots instead of crashing, enforces a request step/time budget, retries invalid citations once, and explicitly reports unverified answers.
 
-To learn more about Next.js, take a look at the following resources:
+## API Routes
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `POST /api/inspect` maps a public GitHub repository.
+- `POST /api/ask` accepts `{ snapshot, question, mode }` and returns the answer, citations, trace, confidence, consistency, refusal details, and optional diff.
+- `POST /api/approve` logs an approval request and returns `{ applied: true }`; it performs no GitHub write.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Evaluation Harness
 
-## Deploy on Vercel
+The independent Python harness in `eval/` mirrors the bounded clone and file-walk behavior without calling the web app:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+python eval/harness.py https://github.com/octocat/Hello-World --file-cap 100
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Validation
+
+```bash
+npm run lint
+npm run build
+```
+
+The Supabase pgvector migration is retained in `supabase/migrations/` for future semantic indexing, but the current hackathon pipeline uses simple path/keyword matching and does not wire up vector search.

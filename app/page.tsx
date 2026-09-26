@@ -2,42 +2,42 @@
 
 import { FormEvent, useState } from "react";
 
-type Snapshot = { url: string; commit: string; files: { path: string; bytes: number }[]; ignored: number; truncated: boolean };
+type Snapshot = { url: string; commit: string; files: { path: string; bytes: number; content?: string }[]; ignored: number; truncated: boolean; degraded?: boolean; degradedReason?: string };
+type Trace = { agent: "Planner" | "Executor" | "Critic"; input: string; output: string; latency_ms: number };
+type AskResult = { answer: string; citations: string[]; locations: { citation: string; reason?: string; question: string }[]; confidence: "high" | "low" | "refused"; refused: string[]; trace: Trace[]; consistency: string; stopped?: string; suggestedDiff?: string };
 
 export default function Home() {
-  const [url, setUrl] = useState("");
-  const [fileCap, setFileCap] = useState("500");
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [error, setError] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
+  const [url, setUrl] = useState(""); const [fileCap, setFileCap] = useState("500"); const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [error, setError] = useState(""); const [isLoading, setIsLoading] = useState(false); const [question, setQuestion] = useState(""); const [inputMode, setInputMode] = useState<"question" | "error">("question"); const [result, setResult] = useState<AskResult | null>(null); const [activeAgent, setActiveAgent] = useState<Trace["agent"] | null>(null); const [approval, setApproval] = useState("");
 
   async function inspect(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setIsLoading(true); setError(""); setSnapshot(null);
-    try {
-      const response = await fetch("/api/inspect", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url, fileCap: Number(fileCap) }) });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error ?? "Inspection failed.");
-      setSnapshot(payload);
-    } catch (inspectionError) { setError(inspectionError instanceof Error ? inspectionError.message : "Inspection failed."); }
-    finally { setIsLoading(false); }
+    event.preventDefault(); setIsLoading(true); setError(""); setSnapshot(null); setResult(null);
+    try { const response = await fetch("/api/inspect", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url, fileCap: Number(fileCap) }) }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error ?? "Inspection failed."); setSnapshot(payload); }
+    catch (inspectionError) { setError(inspectionError instanceof Error ? inspectionError.message : "Inspection failed."); } finally { setIsLoading(false); }
   }
 
-  return (
-    <main className="shell">
-      <div className="topline"><span className="mark">AR</span><span>ASK ANY REPO</span><span className="status"><i /> local workspace</span></div>
-      <section className="hero"><p className="eyebrow">Repository intelligence / 01</p><h1>Bring a codebase<br /><em>into focus.</em></h1><p className="lede">Start with a clean, shallow snapshot. We&apos;ll map the repository before the questions begin.</p></section>
-      <section className="workspace-grid">
-        <form className="inspect-panel" onSubmit={inspect}>
-          <div className="panel-heading"><span>01</span><h2>Source repository</h2></div>
-          <label htmlFor="repo-url">GitHub URL</label><div className="url-field"><span>https://</span><input id="repo-url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="github.com/owner/repository" required /></div>
-          <div className="field-row"><div><label htmlFor="file-cap">File cap</label><input id="file-cap" type="number" min="1" max="10000" value={fileCap} onChange={(event) => setFileCap(event.target.value)} /></div><p className="field-note">A shallow clone, walked locally.<br />Images, locks, builds, and dependencies are skipped.</p></div>
-          <button type="submit" disabled={isLoading}>{isLoading ? "Mapping repository..." : "Map repository"}<span>↗</span></button>
-          {error && <p className="error" role="alert">{error}</p>}
-        </form>
-        <aside className="protocol-panel"><div className="panel-heading"><span>02</span><h2>Protocol</h2></div><ol><li><strong>Clone</strong><span>Depth one, no tags</span></li><li><strong>Filter</strong><span>Focused file surface</span></li><li><strong>Count</strong><span>Hard cap enforced</span></li></ol><div className="vector-note"><span className="vector-icon">∿</span><div><strong>pgvector ready</strong><span>Semantic retrieval is configured in Supabase.</span></div></div></aside>
-      </section>
-      {snapshot && <section className="results" aria-live="polite"><div className="results-heading"><div><p className="eyebrow">Snapshot complete</p><h2>Repository surface</h2></div><span className="commit">{snapshot.commit.slice(0, 8)}</span></div><div className="stats"><div><strong>{snapshot.files.length}</strong><span>files mapped</span></div><div><strong>{snapshot.ignored}</strong><span>entries filtered</span></div><div><strong>{snapshot.truncated ? "CAP" : "FULL"}</strong><span>{snapshot.truncated ? "limit reached" : "tree visited"}</span></div></div><ul className="file-list">{snapshot.files.map((file) => <li key={file.path}><span>{file.path}</span><small>{file.bytes.toLocaleString()} B</small></li>)}</ul></section>}
-      <footer><span>temporary clone / discarded after inspection</span><span>supabase + pgvector / eval harness</span></footer>
-    </main>
-  );
+  async function ask(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if (!snapshot) return; setIsLoading(true); setError(""); setResult(null);
+    try { const response = await fetch("/api/ask", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ snapshot, question, mode: inputMode }) }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error ?? "Ask failed."); setResult(payload); }
+    catch (askError) { setError(askError instanceof Error ? askError.message : "Ask failed."); } finally { setIsLoading(false); }
+  }
+
+  async function approve() { if (!result?.suggestedDiff) return; const response = await fetch("/api/approve", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ diff: result.suggestedDiff }) }); setApproval(response.ok ? "Approval stub logged." : "Approval failed."); }
+
+  const traces = result?.trace ?? []; const agentTraces = (agent: Trace["agent"]) => traces.filter((trace) => trace.agent === agent); const activeTrace = activeAgent ? agentTraces(activeAgent) : [];
+  const confidenceLabel = result?.confidence === "high" ? "High" : result?.confidence === "low" ? "Low" : "Refused"; const primaryLocation = result?.locations[0];
+
+  return <main className="shell">
+    <div className="topline"><span className="mark">AR</span><span>ASK ANY REPO</span><span className="status"><i /> local workspace</span></div>
+    <section className="hero"><p className="eyebrow">Repository intelligence / 01</p><h1>Bring a codebase<br /><em>into focus.</em></h1><p className="lede">Start with a clean, shallow snapshot. We&apos;ll map the repository before the questions begin.</p></section>
+    <section className="workspace-grid"><form className="inspect-panel" onSubmit={inspect}><div className="panel-heading"><span>01</span><h2>Source repository</h2></div><label htmlFor="repo-url">GitHub URL</label><div className="url-field"><span>https://</span><input id="repo-url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="github.com/owner/repository" required /></div><div className="field-row"><div><label htmlFor="file-cap">File cap</label><input id="file-cap" type="number" min="1" max="10000" value={fileCap} onChange={(event) => setFileCap(event.target.value)} /></div><p className="field-note">A shallow clone, walked locally.<br />Images, locks, builds, and dependencies are skipped.</p></div><button type="submit" disabled={isLoading}>{isLoading ? "Mapping repository..." : "Map repository"}<span>↗</span></button>{error && <p className="error" role="alert">{error}</p>}</form><aside className="protocol-panel"><div className="panel-heading"><span>02</span><h2>Protocol</h2></div><ol><li><strong>Clone</strong><span>Depth one, no tags</span></li><li><strong>Filter</strong><span>Focused file surface</span></li><li><strong>Count</strong><span>Hard cap enforced</span></li></ol><div className="vector-note"><span className="vector-icon">∿</span><div><strong>three agents ready</strong><span>Plan, execute, then verify.</span></div></div></aside></section>
+    {snapshot && <section className="results" aria-live="polite"><div className="results-heading"><div><p className="eyebrow">Snapshot complete {snapshot.degraded && "/ degraded"}</p><h2>Repository surface</h2></div><span className="commit">{snapshot.commit.slice(0, 8)}</span></div>{snapshot.degradedReason && <p className="error snapshot-error">{snapshot.degradedReason}</p>}<div className="stats"><div><strong>{snapshot.files.length}</strong><span>files mapped</span></div><div><strong>{snapshot.ignored}</strong><span>entries filtered</span></div><div><strong>{snapshot.truncated ? "CAP" : "FULL"}</strong><span>{snapshot.truncated ? "limit reached" : "tree visited"}</span></div></div><ul className="file-list">{snapshot.files.map((file) => <li key={file.path}><span>{file.path}</span><small>{file.bytes.toLocaleString()} B</small></li>)}</ul></section>}
+    {snapshot && <form className="ask-panel" onSubmit={ask}><div className="panel-heading"><span>03</span><h2>Ask about this repo</h2></div><div className="mode-toggle" role="group" aria-label="Input mode"><button type="button" className={inputMode === "question" ? "active" : ""} onClick={() => setInputMode("question")}>Ask a question</button><button type="button" className={inputMode === "error" ? "active" : ""} onClick={() => setInputMode("error")}>Paste an error</button></div><label htmlFor="question">{inputMode === "error" ? "Error message / stack trace" : "Plain-English question"}</label><div className="url-field"><textarea id="question" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder={inputMode === "error" ? "TypeError: Cannot read properties of undefined..." : "Where are user sessions created?"} required /></div><p className="field-note">Mode: {inputMode === "error" ? "error investigation" : "code question"}</p><button type="submit" disabled={isLoading}>{isLoading ? "Agents are working..." : "Ask the agents"}<span>↗</span></button></form>}
+    {result && <>
+      <section className="agent-panel"><div className="panel-heading"><span>04</span><h2>Agents on this question</h2></div><div className="agent-buttons">{(["Planner", "Executor", "Critic"] as const).map((agent) => <button type="button" key={agent} className={activeAgent === agent ? "selected" : ""} onClick={() => setActiveAgent(activeAgent === agent ? null : agent)}>{agent}<span>{agentTraces(agent).length ? `done / ${Math.max(0, agentTraces(agent).length - 1)} retries` : "pending"}</span></button>)}</div>{activeAgent && <div className="trace-detail">{activeTrace.map((trace, index) => <div key={`${trace.agent}-${index}`}><strong>{trace.agent} / {trace.latency_ms}ms</strong><small>input</small><p>{trace.input}</p><small>output</small><pre>{trace.output}</pre></div>)}</div>}</section>
+      <section className="answer-panel"><div className="panel-heading"><span>05</span><h2>Answer</h2></div><div className="answer-detail"><p className="answer-text">{result.answer}</p><div className="answer-meta">{result.citations.map((citation) => <span className="citation" key={citation}>{citation}</span>)}<span className={`confidence ${result.confidence}`}>{confidenceLabel}</span><span className="consistency">consistency: {result.consistency} runs agreed</span></div></div></section>
+      <section className="live-panel"><div className="panel-heading"><span>06</span><h2>Live side panel</h2></div><div className="live-region location-region"><div className="region-label">Location</div>{primaryLocation ? <><strong>{primaryLocation.citation}</strong><p>{primaryLocation.reason ?? "The Executor identified this as the strongest matching location."}</p>{result.locations.slice(1).map((location, index) => <div className="secondary-location" key={`${location.citation}-${index}`}><strong>{location.citation}</strong><span>{location.reason}</span></div>)}</> : <p>No citation could be verified.</p>}</div><div className="live-region confidence-region"><div className="region-label">Confidence</div><span className={`confidence ${result.confidence}`}>{confidenceLabel}</span><span className="consistency">consistency: {result.consistency} runs agreed</span>{result.stopped && <span className="consistency">stopped: budget exceeded</span>}</div><div className="live-region quick-fix-region"><div className="region-label">Quick fix</div>{inputMode === "error" && result.suggestedDiff ? <pre>{result.suggestedDiff}</pre> : <p className="field-note">{inputMode === "error" ? "No verified diff was suggested for this error." : "Quick fixes appear here when an error investigation produces a diff."}</p>}</div><div className="live-region approval-region"><div className="region-label">Approve / reject</div>{inputMode === "error" && result.suggestedDiff ? <div className="diff-actions"><button type="button" onClick={approve}>Approve</button><button type="button" className="reject" onClick={() => setApproval("Rejection recorded client-side.")}>Reject</button></div> : <p className="field-note">Approval is available for an error-mode diff.</p>}{approval && <p className="field-note">{approval}</p>}</div></section>
+    </>}
+    <footer><span>temporary clone / discarded after inspection</span><span>groq agents / 30 req min free tier</span></footer>
+  </main>;
 }
